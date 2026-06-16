@@ -362,6 +362,61 @@ def resolve_leg(leg: TennisLeg, match: TEMatch) -> LegResolution:
         won = (p1_sets, p2_sets) == (sel_p1, sel_p2)
         return LegResolution(status="ganada" if won else "perdida", marcador=marker)
 
+    if leg.mercado == "first_set_winner":
+        if not sets:
+            return LegResolution(status="no_verificable", motivo="sin datos de sets", marcador=marker)
+        # Ganador del primer set: primer elemento de la lista orientada
+        first_p1, first_p2 = sets[0]
+        if first_p1 == first_p2:
+            return LegResolution(status="no_verificable", motivo="primer set empatado (datos inválidos)", marcador=marker)
+        first_set_winner_is_p1 = first_p1 > first_p2
+        which = _sel_matches_player(leg.seleccion, leg.jugador_1, leg.jugador_2)
+        if which == 0:
+            return LegResolution(status="no_verificable", motivo="selección no identifica jugador", marcador=marker)
+        bet_on_p1 = (which == 1)
+        won = (bet_on_p1 and first_set_winner_is_p1) or (not bet_on_p1 and not first_set_winner_is_p1)
+        return LegResolution(status="ganada" if won else "perdida", marcador=marker)
+
+    if leg.mercado in ("over_under_games_set1", "first_set_ou_games"):
+        if not sets:
+            return LegResolution(status="no_verificable", motivo="sin datos de sets", marcador=marker)
+        if leg.linea is None:
+            return LegResolution(status="no_verificable", motivo="sin línea", marcador=marker)
+        if match.status == "retired":
+            return LegResolution(status="void", motivo="retirada en mercado de primer set", marcador=marker)
+        games_set1 = sets[0][0] + sets[0][1]
+        over = games_set1 > leg.linea
+        under = games_set1 < leg.linea
+        if not over and not under:
+            return LegResolution(status="void", motivo=f"empate exacto en línea {leg.linea}", marcador=marker)
+        result = "over" if over else "under"
+        won = leg.seleccion.lower() == result
+        return LegResolution(status="ganada" if won else "perdida", marcador=marker)
+
+    if leg.mercado in ("over_under_aces", "over_under_aces_jugador"):
+        # Tennis Explorer no expone estadísticas de aces → no verificable
+        return LegResolution(
+            status="no_verificable",
+            motivo="aces no disponibles en Tennis Explorer",
+            marcador=marker,
+        )
+
+    if leg.mercado == "tiebreak_yn":
+        if not sets:
+            return LegResolution(status="no_verificable", motivo="sin datos de sets", marcador=marker)
+        if match.status == "retired":
+            return LegResolution(status="void", motivo="retirada en mercado tie-break", marcador=marker)
+        # Hay tie-break si algún set terminó 7-6 (o más raramente con TB en tercer set de grand slam)
+        had_tiebreak = any(
+            (a == 7 and b == 6) or (a == 6 and b == 7) for a, b in match.sets
+        )
+        sel = leg.seleccion.lower().strip()
+        if sel not in ("si", "sí", "no"):
+            return LegResolution(status="no_verificable", motivo=f"selección inesperada: {leg.seleccion}", marcador=marker)
+        bet_si = sel in ("si", "sí")
+        won = (bet_si and had_tiebreak) or (not bet_si and not had_tiebreak)
+        return LegResolution(status="ganada" if won else "perdida", marcador=marker)
+
     return LegResolution(status="no_verificable", motivo=f"mercado no soportado: {leg.mercado}", marcador=marker)
 
 

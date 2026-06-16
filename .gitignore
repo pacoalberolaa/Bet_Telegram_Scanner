@@ -31,6 +31,7 @@ reports/
 
 # Datos privados (exports de canales, análisis intermedios)
 Tipster_a_Analizar/
+Canales/
 ChatExport_*/
 
 # IDE

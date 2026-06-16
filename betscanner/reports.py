@@ -8,7 +8,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
 from .analytics import TipsterReport
-from .models import PickDocument
+from .models import DartsLeg, FootballLeg, PickDocument, TennisLeg
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +27,14 @@ def _write_header(ws, headers: list[str]) -> None:
 def _legs_summary(pick: PickDocument) -> str:
     parts = []
     for leg in pick.payload.legs:
-        line = f"{leg.jugador_1} vs {leg.jugador_2} | {leg.mercado}:{leg.seleccion}"
+        if isinstance(leg, TennisLeg):
+            line = f"{leg.jugador_1} vs {leg.jugador_2} | {leg.mercado}:{leg.seleccion}"
+        elif isinstance(leg, FootballLeg):
+            line = f"{leg.equipo_local} vs {leg.equipo_visitante} | {leg.mercado}:{leg.seleccion}"
+        elif isinstance(leg, DartsLeg):
+            line = f"{leg.jugador_1} vs {leg.jugador_2} | {leg.mercado}:{leg.seleccion}"
+        else:
+            line = str(leg)
         if leg.linea is not None:
             line += f" ({leg.linea:+g})"
         parts.append(line)
@@ -77,7 +84,7 @@ def export_xlsx(out_path: Path, report: TipsterReport, picks: list[PickDocument]
     # Picks verificados (solo los reales)
     ws_v = wb.create_sheet("Picks_Verificados")
     _write_header(ws_v, [
-        "fecha_utc", "message_id", "casa", "legs", "cuota_total",
+        "fecha_utc", "message_id", "sport", "casa", "legs", "cuota_total",
         "stake_u", "resultado_real", "marcador_real", "profit_u",
     ])
     row = 2
@@ -86,21 +93,22 @@ def export_xlsx(out_path: Path, report: TipsterReport, picks: list[PickDocument]
             continue
         ws_v.cell(row=row, column=1, value=p.date_utc.isoformat(sep=" ", timespec="minutes"))
         ws_v.cell(row=row, column=2, value=p.message_id)
-        ws_v.cell(row=row, column=3, value=p.payload.casa_apuestas)
-        ws_v.cell(row=row, column=4, value=_legs_summary(p))
-        ws_v.cell(row=row, column=5, value=p.payload.cuota_total)
-        ws_v.cell(row=row, column=6, value=p.payload.stake_indicado)
-        ws_v.cell(row=row, column=7, value=p.resolution.status)
-        ws_v.cell(row=row, column=8, value=_real_score(p))
-        ws_v.cell(row=row, column=9, value=p.profit_units)
+        ws_v.cell(row=row, column=3, value=p.payload.sport)
+        ws_v.cell(row=row, column=4, value=p.payload.casa_apuestas)
+        ws_v.cell(row=row, column=5, value=_legs_summary(p))
+        ws_v.cell(row=row, column=6, value=p.payload.cuota_total)
+        ws_v.cell(row=row, column=7, value=p.payload.stake_indicado)
+        ws_v.cell(row=row, column=8, value=p.resolution.status)
+        ws_v.cell(row=row, column=9, value=_real_score(p))
+        ws_v.cell(row=row, column=10, value=p.profit_units)
         row += 1
-    for col, width in zip("ABCDEFGHI", (18, 12, 14, 70, 12, 10, 14, 22, 12)):
+    for col, width in zip("ABCDEFGHIJ", (18, 12, 12, 14, 70, 12, 10, 14, 22, 12)):
         ws_v.column_dimensions[col].width = width
 
     # Picks no verificables (los que necesitan revisión manual)
     ws_n = wb.create_sheet("Picks_No_Verificables")
     _write_header(ws_n, [
-        "fecha_utc", "message_id", "casa", "legs", "cuota_total",
+        "fecha_utc", "message_id", "sport", "casa", "legs", "cuota_total",
         "stake_u", "motivo",
     ])
     row = 2
@@ -109,13 +117,14 @@ def export_xlsx(out_path: Path, report: TipsterReport, picks: list[PickDocument]
             continue
         ws_n.cell(row=row, column=1, value=p.date_utc.isoformat(sep=" ", timespec="minutes"))
         ws_n.cell(row=row, column=2, value=p.message_id)
-        ws_n.cell(row=row, column=3, value=p.payload.casa_apuestas)
-        ws_n.cell(row=row, column=4, value=_legs_summary(p))
-        ws_n.cell(row=row, column=5, value=p.payload.cuota_total)
-        ws_n.cell(row=row, column=6, value=p.payload.stake_indicado)
-        ws_n.cell(row=row, column=7, value=_unverif_reason(p))
+        ws_n.cell(row=row, column=3, value=p.payload.sport)
+        ws_n.cell(row=row, column=4, value=p.payload.casa_apuestas)
+        ws_n.cell(row=row, column=5, value=_legs_summary(p))
+        ws_n.cell(row=row, column=6, value=p.payload.cuota_total)
+        ws_n.cell(row=row, column=7, value=p.payload.stake_indicado)
+        ws_n.cell(row=row, column=8, value=_unverif_reason(p))
         row += 1
-    for col, width in zip("ABCDEFG", (18, 12, 14, 70, 12, 10, 60)):
+    for col, width in zip("ABCDEFGH", (18, 12, 12, 14, 70, 12, 10, 60)):
         ws_n.column_dimensions[col].width = width
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
