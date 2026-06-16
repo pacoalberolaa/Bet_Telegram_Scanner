@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtualenvs
+.venv/
+venv/
+env/
+ENV/
+
+# Env vars y secretos
+.env
+.env.local
+.env.*.local
+
+# Telethon sessions (contienen credenciales)
+*.session
+*.session-journal
+
+# Reports / outputs
+reports/
+*.xlsx
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+
+# Caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

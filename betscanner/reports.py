@@ -1,0 +1,124 @@
+"""Exportación a Excel: resumen, picks verificados y picks no_verificables."""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
+
+from .analytics import TipsterReport
+from .models import PickDocument
+
+log = logging.getLogger(__name__)
+
+_HEADER_FONT = Font(bold=True, color="FFFFFF")
+_HEADER_FILL = PatternFill("solid", fgColor="305496")
+
+
+def _write_header(ws, headers: list[str]) -> None:
+    for i, h in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=i, value=h)
+        cell.font = _HEADER_FONT
+        cell.fill = _HEADER_FILL
+    ws.freeze_panes = "A2"
+
+
+def _legs_summary(pick: PickDocument) -> str:
+    parts = []
+    for leg in pick.payload.legs:
+        line = f"{leg.jugador_1} vs {leg.jugador_2} | {leg.mercado}:{leg.seleccion}"
+        if leg.linea is not None:
+            line += f" ({leg.linea:+g})"
+        parts.append(line)
+    return " || ".join(parts)
+
+
+def _real_score(pick: PickDocument) -> str:
+    if pick.resolution is None:
+        return ""
+    return " || ".join(r.marcador or "" for r in pick.resolution.legs)
+
+
+def _unverif_reason(pick: PickDocument) -> str:
+    if pick.resolution is None:
+        return "sin resolución"
+    parts = [pick.resolution.motivo or ""]
+    for i, r in enumerate(pick.resolution.legs):
+        if r.status == "no_verificable":
+            parts.append(f"leg{i+1}: {r.motivo or '?'}")
+    return " | ".join(p for p in parts if p)
+
+
+def export_xlsx(out_path: Path, report: TipsterReport, picks: list[PickDocument]) -> Path:
+    wb = Workbook()
+
+    # Resumen
+    ws = wb.active
+    ws.title = "Resumen"
+    _write_header(ws, ["Métrica", "Valor"])
+    for i, (k, v) in enumerate([
+        ("tipster", report.tipster),
+        ("total_picks", report.total_picks),
+        ("verificados", report.verificados),
+        ("no_verificables", report.no_verificables),
+        ("ganados", report.ganados),
+        ("perdidos", report.perdidos),
+        ("voids", report.voids),
+        ("stake_total (u)", report.stake_total),
+        ("profit_total (u)", report.profit_total),
+        ("yield (%)", report.yield_pct),
+    ], start=2):
+        ws.cell(row=i, column=1, value=k)
+        ws.cell(row=i, column=2, value=v)
+    ws.column_dimensions["A"].width = 22
+    ws.column_dimensions["B"].width = 18
+
+    # Picks verificados (solo los reales)
+    ws_v = wb.create_sheet("Picks_Verificados")
+    _write_header(ws_v, [
+        "fecha_utc", "message_id", "casa", "legs", "cuota_total",
+        "stake_u", "resultado_real", "marcador_real", "profit_u",
+    ])
+    row = 2
+    for p in picks:
+        if p.resolution is None or p.resolution.status == "no_verificable":
+            continue
+        ws_v.cell(row=row, column=1, value=p.date_utc.isoformat(sep=" ", timespec="minutes"))
+        ws_v.cell(row=row, column=2, value=p.message_id)
+        ws_v.cell(row=row, column=3, value=p.payload.casa_apuestas)
+        ws_v.cell(row=row, column=4, value=_legs_summary(p))
+        ws_v.cell(row=row, column=5, value=p.payload.cuota_total)
+        ws_v.cell(row=row, column=6, value=p.payload.stake_indicado)
+        ws_v.cell(row=row, column=7, value=p.resolution.status)
+        ws_v.cell(row=row, column=8, value=_real_score(p))
+        ws_v.cell(row=row, column=9, value=p.profit_units)
+        row += 1
+    for col, width in zip("ABCDEFGHI", (18, 12, 14, 70, 12, 10, 14, 22, 12)):
+        ws_v.column_dimensions[col].width = width
+
+    # Picks no verificables (los que necesitan revisión manual)
+    ws_n = wb.create_sheet("Picks_No_Verificables")
+    _write_header(ws_n, [
+        "fecha_utc", "message_id", "casa", "legs", "cuota_total",
+        "stake_u", "motivo",
+    ])
+    row = 2
+    for p in picks:
+        if p.resolution is not None and p.resolution.status != "no_verificable":
+            continue
+        ws_n.cell(row=row, column=1, value=p.date_utc.isoformat(sep=" ", timespec="minutes"))
+        ws_n.cell(row=row, column=2, value=p.message_id)
+        ws_n.cell(row=row, column=3, value=p.payload.casa_apuestas)
+        ws_n.cell(row=row, column=4, value=_legs_summary(p))
+        ws_n.cell(row=row, column=5, value=p.payload.cuota_total)
+        ws_n.cell(row=row, column=6, value=p.payload.stake_indicado)
+        ws_n.cell(row=row, column=7, value=_unverif_reason(p))
+        row += 1
+    for col, width in zip("ABCDEFG", (18, 12, 14, 70, 12, 10, 60)):
+        ws_n.column_dimensions[col].width = width
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out_path)
+    log.info("Excel generado en %s", out_path)
+    return out_path
