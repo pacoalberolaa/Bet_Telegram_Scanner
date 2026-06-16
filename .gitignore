@@ -29,6 +29,10 @@ ENV/
 reports/
 *.xlsx
 
+# Datos privados (exports de canales, análisis intermedios)
+Tipster_a_Analizar/
+ChatExport_*/
+
 # IDE
 .vscode/
 .idea/

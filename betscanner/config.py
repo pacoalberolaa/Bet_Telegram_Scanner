@@ -29,6 +29,9 @@ TE_USER_AGENT: str = os.environ.get(
 # Output
 REPORTS_DIR: Path = Path(os.environ.get("BETSCANNER_REPORTS_DIR", "reports"))
 
+# Concurrencia (workers que procesan meses en paralelo)
+WORKERS: int = int(os.environ.get("BETSCANNER_WORKERS", "3"))
+
 
 def setup_logging(level: int = logging.INFO) -> None:
     handler = logging.StreamHandler(sys.stdout)

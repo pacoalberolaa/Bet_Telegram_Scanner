@@ -1,14 +1,13 @@
-"""Pipeline: candidato Telegram -> pHash -> dedup -> visión IA -> resolver TE -> Mongo."""
+"""Pipeline: candidato del export -> pHash -> dedup -> visión IA -> resolver TE -> Mongo."""
 from __future__ import annotations
 
-import io
 import logging
 
 from .analytics import profit_units
 from .config import DEDUP_WINDOW_HOURS, PHASH_HAMMING_MAX
 from .dedup import compute_phash, find_duplicate
-from .extractor import MessageCandidate
-from .models import PickDocument
+from .ingest_export import MessageCandidate
+from .models import PickDocument, PickResolution
 from .resolver_tennis import TennisExplorerClient, resolve_pick
 from .storage import PickStore
 from .vision import VisionExtractor
@@ -22,22 +21,20 @@ async def process_candidate(
     vision: VisionExtractor,
     te: TennisExplorerClient,
 ) -> PickDocument | None:
-    """Procesa un candidato completo. Devuelve el doc persistido o None si se descarta."""
     tipster = candidate.channel
 
     if await store.exists(tipster, candidate.message_id):
         log.debug("Ya persistido tipster=%s msg=%s", tipster, candidate.message_id)
         return None
 
-    buf = io.BytesIO()
     try:
-        await candidate.message.download_media(file=buf)
-    except Exception:
-        log.exception("Fallo descargando media tipster=%s msg=%s", tipster, candidate.message_id)
+        image_bytes = candidate.photo_path.read_bytes()
+    except OSError:
+        log.exception("Fallo leyendo foto tipster=%s msg=%s path=%s",
+                      tipster, candidate.message_id, candidate.photo_path)
         return None
-    image_bytes = buf.getvalue()
     if not image_bytes:
-        log.warning("Media vacía tipster=%s msg=%s", tipster, candidate.message_id)
+        log.warning("Foto vacía tipster=%s msg=%s", tipster, candidate.message_id)
         return None
 
     try:
@@ -81,7 +78,6 @@ async def process_candidate(
         resolution = await resolve_pick(payload.legs, candidate.date_utc_naive.date(), te)
     except Exception:
         log.exception("Fallo resolviendo en TE tipster=%s msg=%s", tipster, candidate.message_id)
-        from .models import PickResolution
         resolution = PickResolution(status="no_verificable", motivo="error en resolver")
 
     profit = profit_units(payload, resolution)

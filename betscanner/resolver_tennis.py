@@ -50,35 +50,54 @@ class TennisExplorerClient:
             follow_redirects=True,
         )
         self._memory: dict[date, list[TEMatch]] = {}
+        # Lock global de fetch: garantiza rate-limit GLOBAL aunque haya N workers.
+        self._fetch_lock = asyncio.Lock()
+        # Lock por fecha: evita que 2 workers scrapeen el mismo día a la vez.
+        self._date_locks: dict[date, asyncio.Lock] = {}
+        self._locks_lock = asyncio.Lock()
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def _date_lock(self, d: date) -> asyncio.Lock:
+        async with self._locks_lock:
+            lock = self._date_locks.get(d)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._date_locks[d] = lock
+            return lock
+
     async def matches_on(self, d: date) -> list[TEMatch]:
         if d in self._memory:
             return self._memory[d]
-        cached = await self._store.get_te_matches(d)
-        if cached is not None:
-            matches = [_match_from_dict(m) for m in cached]
+
+        date_lock = await self._date_lock(d)
+        async with date_lock:
+            if d in self._memory:
+                return self._memory[d]
+            cached = await self._store.get_te_matches(d)
+            if cached is not None:
+                matches = [_match_from_dict(m) for m in cached]
+                self._memory[d] = matches
+                return matches
+
+            matches: list[TEMatch] = []
+            for rtype in RESULT_TYPES:
+                url = f"{BASE_URL}/results/?type={rtype}&year={d.year}&month={d.month:02d}&day={d.day:02d}"
+                try:
+                    async with self._fetch_lock:
+                        await asyncio.sleep(self._rate)
+                        r = await self._client.get(url)
+                    if r.status_code != 200:
+                        log.warning("TE %s -> HTTP %s", url, r.status_code)
+                        continue
+                    matches.extend(_parse_results(r.text, d))
+                except Exception:
+                    log.exception("Fallo scrapeando TE %s", url)
+
+            await self._store.save_te_matches(d, [asdict(m) for m in matches])
             self._memory[d] = matches
             return matches
-
-        matches: list[TEMatch] = []
-        for rtype in RESULT_TYPES:
-            url = f"{BASE_URL}/results/?type={rtype}&year={d.year}&month={d.month:02d}&day={d.day:02d}"
-            try:
-                await asyncio.sleep(self._rate)
-                r = await self._client.get(url)
-                if r.status_code != 200:
-                    log.warning("TE %s -> HTTP %s", url, r.status_code)
-                    continue
-                matches.extend(_parse_results(r.text, d))
-            except Exception:
-                log.exception("Fallo scrapeando TE %s", url)
-
-        await self._store.save_te_matches(d, [asdict(m) for m in matches])
-        self._memory[d] = matches
-        return matches
 
     async def find_match(
         self,
