@@ -8,7 +8,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
 from .analytics import TipsterReport
-from .models import DartsLeg, FootballLeg, PickDocument, TennisLeg
+from .models import BasketballLeg, DartsLeg, FootballLeg, PickDocument, TennisLeg
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +33,10 @@ def _legs_summary(pick: PickDocument) -> str:
             line = f"{leg.equipo_local} vs {leg.equipo_visitante} | {leg.mercado}:{leg.seleccion}"
         elif isinstance(leg, DartsLeg):
             line = f"{leg.jugador_1} vs {leg.jugador_2} | {leg.mercado}:{leg.seleccion}"
+        elif isinstance(leg, BasketballLeg):
+            line = f"{leg.equipo_local} vs {leg.equipo_visitante} | {leg.mercado}:{leg.seleccion}"
+            if leg.over_under is not None:
+                line += f" [{leg.over_under}]"
         else:
             line = str(leg)
         if leg.linea is not None:

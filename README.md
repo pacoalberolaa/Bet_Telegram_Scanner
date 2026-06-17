@@ -19,7 +19,7 @@ BetTelegramScanner automatiza ese trabajo:
 4. **Extrae** los datos estructurados (jugadores, mercado, cuota, selección, línea)
    con un prompt especializado por deporte.
 5. **Verifica** el resultado real contra Tennis Explorer (tenis) o fuentes equivalentes
-   (fútbol, dardos).
+   (fútbol, dardos, baloncesto).
 6. **Calcula el ROI** unitario y emite un Excel con todos los picks y su resolución.
 
 Todo persistido en MongoDB Atlas, idempotente (re-ejecutable sin duplicar trabajo) y
@@ -87,11 +87,14 @@ paralelizado por meses para procesar años de histórico en minutos.
 | `ingest_export.py` | Lee `result.json` del export de Telegram, filtra mensajes válidos. |
 | `dedup.py` | Calcula pHash visual (`imagehash`) y busca duplicados en ventana 72h. |
 | `vision.py` | Cliente Anthropic. Fase 1: detección de deporte. Fase 2: extracción especializada con prompt-cache. |
-| `models.py` | Esquemas Pydantic (Tennis/Football/Darts payloads + PickDocument + PickResolution). |
+| `models.py` | Esquemas Pydantic (Tennis/Football/Darts/Basketball payloads + PickDocument + PickResolution). |
 | `pipeline.py` | Orquesta por candidato: exists → pHash → dedup → vision → resolver → persist. |
 | `resolver_tennis.py` | Verifica resultados contra Tennis Explorer (scraping + cache en Mongo). |
 | `resolver_football.py` | Verifica resultados de fútbol (stub/placeholder a ampliar). |
 | `resolver_darts.py` | Verifica resultados de dardos (stub/placeholder a ampliar). |
+| `resolver_basketball.py` | Verifica resultados de baloncesto contra API-Sports (mercados de equipo: moneyline, hcp, totales, team total, ganador mitad/cuarto). |
+| `api_basketball.py` | Cliente HTTP de API-Sports basketball (v1.basketball.api-sports.io) con rate-limit + cache en Mongo (`api_basketball_games`). |
+| `quality.py` | Detecta extracciones dudosas y las loguea en `reports/low_confidence.jsonl` para revisión. |
 | `storage.py` | Capa Mongo async (Motor). Índices únicos por (tipster, message_id). |
 | `analytics.py` | Calcula `profit_units` y construye el `Report`. |
 | `reports.py` | Exporta el reporte y los picks a Excel (`openpyxl`). |
@@ -169,6 +172,10 @@ cp .env.example .env
 | `BETTELEGRAMSCANNER_PHASH_HAMMING_MAX` | ❌ | Distancia de Hamming máxima para considerar duplicado (default 8) |
 | `BETTELEGRAMSCANNER_TE_RATE_SECONDS` | ❌ | Rate limit del scraper de Tennis Explorer (default 2.5s) |
 | `BETTELEGRAMSCANNER_REPORTS_DIR` | ❌ | Carpeta de salida de los Excel (default `reports/`) |
+| `API_BASKETBALL_KEY` | ⚠️ | API key de api-sports.io (free tier 100 req/día). Sin esto, los picks de basket salen `no_verificable`. |
+| `API_BASKETBALL_RATE_SECONDS` | ❌ | Rate limit del cliente API-Sports basket (default 1.5s) |
+| `API_BASKETBALL_FUZZY_THRESHOLD` | ❌ | Score fuzzy mínimo para matchear equipos (default 75) |
+| `API_BASKETBALL_DAY_WINDOW` | ❌ | Días ± a buscar al resolver un partido (default 1) |
 
 ⚠️ Antes de conectar a Atlas, añade tu IP en **Security → Network Access** o el cluster rechazará la conexión.
 
@@ -219,7 +226,9 @@ Los **$5 de crédito gratis** de Anthropic alcanzan típicamente para **6-12 mes
 
 ## Limitaciones conocidas
 
-- Los resolvers de **fútbol y dardos** son placeholders. Tennis está completo vía Tennis Explorer.
+- Los resolvers de **fútbol y dardos** son placeholders. Tennis (Tennis Explorer) y baloncesto (API-Sports) están operativos.
+- En **baloncesto**, los **mercados de jugador** (puntos/rebotes/asistencias/triples y combos) y `race_to_puntos` salen `no_verificable`: requieren `/games/statistics/players`, un request adicional por partido que agota el free tier de 100 req/día.
+- API-Sports basketball cachea por **fecha completa** en Mongo (colección `api_basketball_games`), así que múltiples ejecuciones sobre el mismo día solo gastan 1 request.
 - El máximo de **6 meses por ejecución** es un hard-cap defensivo (`cli.py:10`). Para más, encadena ejecuciones.
 - El dedup visual opera dentro de **un mismo tipster**. Reenvíos cruzados entre canales no se detectan.
 - La extracción asume que el boleto es **legible**. Capturas borrosas o muy comprimidas pueden devolver `es_pick=true` con `legs=[]`.
@@ -241,6 +250,9 @@ Bet_Telegram_Scanner/
 │   ├── resolver_tennis.py   # verificación contra Tennis Explorer
 │   ├── resolver_football.py # placeholder
 │   ├── resolver_darts.py    # placeholder
+│   ├── resolver_basketball.py # verificación contra API-Sports (mercados de equipo)
+│   ├── api_basketball.py    # cliente HTTP API-Sports + cache Mongo
+│   ├── quality.py           # detector low-confidence + logger JSONL
 │   ├── storage.py           # capa Mongo async
 │   ├── analytics.py         # cálculo de ROI + Report
 │   └── reports.py           # exportación a Excel

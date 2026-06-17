@@ -16,7 +16,7 @@ from anthropic import AsyncAnthropic
 from pydantic import BaseModel
 
 from .config import LLM_PAUSE_SECONDS
-from .models import AnyBetPayload, DartsBetPayload, FootballBetPayload, TennisBetPayload
+from .models import AnyBetPayload, BasketballBetPayload, DartsBetPayload, FootballBetPayload, TennisBetPayload
 
 log = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 class SportDetection(BaseModel):
     es_pick: bool
-    sport: Literal["tennis", "football", "darts", "other"]
+    sport: Literal["tennis", "football", "darts", "basketball", "other"]
 
 
 DETECTION_PROMPT = """Eres un clasificador de imágenes de boletos de apuestas deportivas.
@@ -37,14 +37,15 @@ DETECTION_PROMPT = """Eres un clasificador de imágenes de boletos de apuestas d
 Devuelve SOLO el JSON con dos campos:
 - es_pick (boolean): true si la imagen es un boleto/ticket de apuesta con selección y cuota visible.
   false si es cualquier otra cosa: stats, rachas, memes, banners, capturas de menú, mensajes de texto sin ticket.
-- sport (string): el deporte del boleto. Valores permitidos: "tennis", "football", "darts", "other".
+- sport (string): el deporte del boleto. Valores permitidos: "tennis", "football", "darts", "basketball", "other".
   Solo aplica cuando es_pick=true. Si es_pick=false, pon "other".
 
 Indicios por deporte:
 - tennis: nombres de jugadores individuales, sets, juegos, Roland Garros, ATP, WTA, Wimbledon.
 - football: nombres de equipos, Liga, Premier, Champions, goles, corners, BTTS, 1X2.
 - darts: dardos, PDC, Premier League Darts, legs, 180s, checkout, nombres como Van Gerwen, Wright, Price.
-- other: cualquier otro deporte (baloncesto, hockey, béisbol, rugby…).
+- basketball: NBA, ACB, Euroliga, Eurocup, NCAA, equipos como Lakers, Celtics, Real Madrid Basket, Barça Basket, jugadores como LeBron, Doncic, Curry, Llull; spreads decimales (-5.5, +7.5), totales altos (190+), conceptos como "puntos", "rebotes", "asistencias", "triples", "cuarto", "Q1/Q2/Q3/Q4".
+- other: cualquier otro deporte (hockey, béisbol, rugby, MMA…).
 
 Responde EXCLUSIVAMENTE el JSON. Sin texto extra, sin markdown."""
 
@@ -241,6 +242,128 @@ Precisión > exhaustividad."""
 
 
 # ---------------------------------------------------------------------------
+
+BASKETBALL_PROMPT = """Eres un analista experto en boletos de apuestas de BALONCESTO publicados por tipsters en Telegram.
+
+Tu función es extraer los datos estructurados del boleto. La precisión en equipos, competición, mercado, selección y línea es crítica. Nada de inferir resultados.
+
+# Reglas generales
+- Devuelve EXCLUSIVAMENTE el JSON conforme al esquema. Sin texto extra, sin markdown.
+- Conserva el idioma original. No traduzcas nombres de equipos ni de jugadores.
+- Mantén los prefijos cortos de ciudad si aparecen (BOS Celtics, DEN Nuggets, SA Spurs, NY Knicks, TOR Tempo, IND Fever, CHA Hornets, CHI Bulls, DET Pistons, ORL Magic, MEM Grizzlies, BKN Nets, DAL Mavericks, CLE Cavaliers, OKC Thunder…). El resolver se encarga de normalizar.
+- sport SIEMPRE debe ser "basketball".
+
+# es_pick
+- true: ticket con cuota y selección visibles. false: ruido (memes, banners, capturas vacías).
+- Boleto con la selección difuminada/censurada/borrosa (solo se ve el importe y el botón de cerrar): es_pick=true pero legs=[]. No inventes selecciones a partir del footer si el cuerpo está pixelado.
+- Boleto con solo footer/equipos visibles pero sin mercado ni selección: es_pick=true, legs=[].
+
+# Etiquetas a IGNORAR (no son mercados, no son ganada/perdida)
+- "CASHOUT" / "Cierre" / "Cerrar apuesta": indica cobro anticipado; ignóralo, NO marca el resultado.
+- "En curso" / "Ganada" / "Perdida" / checks verdes / banderines / "ACERTADA" / "Ganancias": resultado/estado del ticket; ignóralo, extrae solo el contenido apostado.
+- Marcadores finales junto a los equipos (ej: "Fenerbahce 93 / Besiktas 68", "Fenerbahce 93 - 68 Besiktas"): son el resultado real, NO el mercado apostado.
+- Contexto de serie / playoffs en texto libre (ej: "5º partido, NYK lidera la serie por 3-1", "Game 4, NYK leads series 2-1"): informativo, no es un mercado.
+- Barras de progreso con cifras parciales (ej: "161 ── 176.5"): es solo visualización, no extraigas.
+- Iconos "+20" sobre el balón: indicador de cuota mejorada del bookie, ignorar.
+
+# Cláusula "Prórroga incluida" / "Sin prórroga"
+- Si el boleto lo dice explícitamente, rellena `prorroga_incluida` en cada leg afectada (true si incluye OT, false si no). null si no se menciona.
+- Es habitual en player props de NBA/Euroliga: afecta a totales y a líneas de jugador.
+
+# MYMATCH / Bet Builder / Combinada de partido / Same Game Parlay
+- Cuando el boleto agrupa 2+ mercados del MISMO partido bajo una única cuota (ej: "MYMATCH: Ganador Fenerbahce + Menos de 176,5"), extrae cada sub-mercado como UNA leg independiente.
+- Todas las legs del combo comparten equipo_local/equipo_visitante y fecha. `cuota_individual = null` en cada leg (no es público). La `cuota_total` del ticket es la cuota combinada del bet builder.
+- Ejemplo (Fenerbahce vs Besiktas, MYMATCH 1.78):
+  - leg 1: mercado=moneyline, seleccion="Fenerbahce"
+  - leg 2: mercado=over_under_puntos, seleccion="under", linea=176.5
+
+# casa_apuestas
+- Detecta por logo/color (Codere fondo oscuro + verde, Bet365 verde lima, Bwin, William Hill…). "desconocida" si no es claro.
+
+# legs — una entrada por mercado del boleto
+
+## equipo_local, equipo_visitante
+- Tal cual aparecen en el boleto, conservando prefijos cortos.
+- Si la línea muestra "EquipoA - EquipoB", EquipoA es local, EquipoB visitante.
+- En NBA suele ser "Visitante @ Local"; respétalo si está claro.
+
+## competicion
+- NBA, WNBA, ACB, Euroliga, Eurocup, NCAA, BCL, FIBA, Lega Basket (Italia), BBL (Alemania), LNB Pro A (Francia), LKL (Lituania), BSL (Turquía, Basketbol Süper Ligi), LEB Oro / Primera FEB (España, 2ª división), etc. null si no se ve.
+- Pistas por bandera/equipos: bandera francesa + Paris/Cholet → LNB Pro A; bandera lituana + Neptunas/Lietkabelis → LKL; bandera turca + Fenerbahce/Besiktas → BSL o Euroliga; bandera griega + Olympiakos/Panathinaikos → Euroliga.
+
+## fecha_evento
+- Solo si aparece explícita en el boleto, formato YYYY-MM-DD. null si no.
+- "Hoy", "Mañana", horas sueltas: no son fechas explícitas → null.
+
+## mercado (enum estricto)
+- "moneyline": ganador del partido (Money Line, Match Winner, Ganador, "Ganador sin empate"). Sin empate.
+- "handicap_puntos": spread / hándicap del partido ("Hándicap de puntos", "Point Spread"). linea = valor con signo.
+- "over_under_puntos": total de puntos del PARTIDO ("Número total de puntos", "Total Points"). linea = valor.
+- "over_under_puntos_equipo": total de puntos de UN equipo ("Más de 103.5 puntos para ORL Magic", "Equipo - Totales", "Team Total Points"). seleccion = equipo; over_under = "over"|"under"; linea = valor.
+- "over_under_mitad": total de puntos de una mitad (1st Half Total). linea = valor. (rellena `periodo`)
+- "over_under_cuarto": total de puntos de un cuarto (Q1 Total…). linea = valor. (rellena `periodo`)
+- "ganador_mitad": ganador de una mitad ("1ª mitad - Ganador", "1ª mitad - Ganador sin empate"). seleccion = equipo. (rellena `periodo`)
+- "ganador_cuarto": ganador de un cuarto. seleccion = equipo. (rellena `periodo`)
+- "handicap_mitad": hándicap de una mitad. linea = valor con signo. (rellena `periodo`)
+- "puntos_jugador": Puntos de un jugador ("Jared McCain - Más de 11.5", "Banchero 5+ puntos").
+- "rebotes_jugador": Rebotes de un jugador ("Mitchell Robinson - Más de 7.5").
+- "asistencias_jugador": Asistencias de un jugador ("Nicolas Claxton - Más de 3.5", "Jokic 10+ asistencias").
+- "triples_jugador": Triples anotados por un jugador (3PT Made).
+- "asistencias_rebotes_jugador": A+R combinados ("Josh Hart - Más de 12.5 Asistencias y rebotes").
+- "puntos_rebotes_jugador": P+R combinados ("Pts + Reb").
+- "puntos_asistencias_jugador": P+A combinados ("Pts + Ast").
+- "puntos_rebotes_asistencias_jugador": PRA combinados ("Noah Penda - Menos de 11.5 puntos, asistencias y rebotes (combinados)", "Puntos, asistencias y rebotes - Más de/Menos de").
+- "doble_doble_jugador": doble-doble. over_under="over"(sí) / "under"(no).
+- "triple_doble_jugador": triple-doble. over_under="over"(sí) / "under"(no).
+- "race_to_puntos": primer equipo en llegar a X puntos (Race to 20). seleccion = equipo; linea = X.
+- Player props acotadas a un periodo concreto (ej: "Banchero 5+ puntos - 1º cuarto"): mantén el mercado base (puntos_jugador) y rellena `periodo` con "Q1".
+- Si el mercado no encaja exactamente, elige el más cercano.
+
+## Formato "X+" sin línea decimal (MUY común en player props)
+- "10+ asistencias" → mercado=asistencias_jugador, linea=9.5, over_under="over".
+- "5+ puntos" → mercado=puntos_jugador, linea=4.5, over_under="over".
+- "Más de 12.5 asistencias y rebotes" → mercado=asistencias_rebotes_jugador, linea=12.5, over_under="over".
+- "Menos de 3.5 asistencias" → mercado=asistencias_jugador, linea=3.5, over_under="under".
+- Regla general: si la apuesta dice "X+" (entero), normaliza siempre a linea=X-0.5 con over_under="over".
+
+## seleccion
+- moneyline / ganador_mitad / ganador_cuarto / race_to_puntos / over_under_puntos_equipo: nombre del equipo apostado.
+- handicap_puntos / handicap_mitad: nombre del equipo apostado (la línea va en `linea`).
+- over_under_puntos / over_under_mitad / over_under_cuarto: "over" o "under".
+- Cualquier *_jugador (incluye combos A+R, P+R, P+A, PRA): nombre del jugador.
+- doble_doble / triple_doble_jugador: nombre del jugador.
+
+## linea
+- handicap con signo: -5.5, +7.5.
+- Totales positivos: puntos partido 210.5, team total 103.5, mitad 105.5, cuarto 55.5.
+- Player props: puntos 24.5, rebotes 9.5, asistencias 6.5, triples 2.5, combos A+R 12.5, PRA 35.5.
+- race_to_puntos: el valor X (ej: 20).
+- null para moneyline, ganador_mitad, ganador_cuarto, doble_doble y triple_doble.
+
+## over_under
+- Para puntos/rebotes/asistencias/triples_jugador, combos de jugador y over_under_puntos_equipo: "over" o "under".
+- Para doble_doble / triple_doble_jugador: "over" si se apuesta SÍ ocurre, "under" si NO.
+- null para mercados de equipo donde basta seleccion + linea, y para over_under_puntos/mitad/cuarto (donde el over/under va en `seleccion`).
+
+## periodo
+- "Q1"/"Q2"/"Q3"/"Q4" para cuartos, "H1"/"H2" para mitades, "OT" para prórroga aislada, "full" si se indica explícitamente "partido completo".
+- null cuando la apuesta se refiere al partido completo de forma implícita (caso por defecto).
+- Rellénalo siempre que el boleto mencione "1º cuarto", "Q1", "2ª mitad", "1ª mitad", "Half", etc.
+
+## prorroga_incluida
+- true / false solo si lo indica explícitamente el boleto ("Prórroga incluida", "OT included", "Sin prórroga"). null en caso contrario.
+
+# cuota_total — cuota final del boleto (>=1.0). En MYMATCH/Bet Builder es la cuota combinada del bet builder.
+# stake_indicado — solo si aparece explícito (€, "u", stake). null si no.
+
+# Casos límite
+- Boleto con resultado ya marcado (Ganada/Cashout/check verde): IGNORA la marca. Extrae solo el ticket.
+- Boleto ilegible / censurado / pixelado: es_pick=true, casa="desconocida", legs=[], cuota_total=1.0.
+
+Precisión > exhaustividad."""
+
+
+# ---------------------------------------------------------------------------
 # Extractor
 # ---------------------------------------------------------------------------
 
@@ -347,6 +470,8 @@ class VisionExtractor:
             return await self._extract_typed(b64, media_type, FOOTBALL_PROMPT, FootballBetPayload)
         if detection.sport == "darts":
             return await self._extract_typed(b64, media_type, DARTS_PROMPT, DartsBetPayload)
+        if detection.sport == "basketball":
+            return await self._extract_typed(b64, media_type, BASKETBALL_PROMPT, BasketballBetPayload)
 
         log.warning("Deporte no soportado detectado: %s — descartando imagen.", detection.sport)
         return _DISCARD_PAYLOAD

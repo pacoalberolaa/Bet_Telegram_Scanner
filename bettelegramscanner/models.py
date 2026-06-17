@@ -215,11 +215,117 @@ class DartsBetPayload(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# BALONCESTO
+# ---------------------------------------------------------------------------
+
+BasketballMercado = Literal[
+    "moneyline",                # ganador del partido (NBA no tiene empate)
+    "handicap_puntos",          # spread / hándicap, ej: -5.5, +7.5
+    "over_under_puntos",        # total puntos del partido
+    "over_under_puntos_equipo", # total puntos de UN equipo (team total). seleccion = equipo
+    "over_under_mitad",         # total puntos de una mitad concreta (linea = valor)
+    "over_under_cuarto",        # total puntos de un cuarto concreto
+    "ganador_mitad",            # ganador del 1er/2do tiempo (seleccion = equipo)
+    "ganador_cuarto",           # ganador de un cuarto concreto
+    "handicap_mitad",           # hándicap de una mitad concreta
+    "puntos_jugador",           # over/under puntos de un jugador (player prop)
+    "rebotes_jugador",          # over/under rebotes de un jugador
+    "asistencias_jugador",      # over/under asistencias de un jugador
+    "triples_jugador",          # over/under triples anotados por un jugador
+    "asistencias_rebotes_jugador",         # A+R combinados de un jugador
+    "puntos_rebotes_jugador",              # P+R combinados de un jugador
+    "puntos_asistencias_jugador",          # P+A combinados de un jugador
+    "puntos_rebotes_asistencias_jugador",  # P+R+A (PRA) combinados de un jugador
+    "doble_doble_jugador",      # si un jugador hace doble-doble (seleccion = "si"/"no")
+    "triple_doble_jugador",     # si un jugador hace triple-doble
+    "race_to_puntos",           # primer equipo en llegar a X puntos (linea = X)
+]
+
+
+BasketballPeriodo = Literal["Q1", "Q2", "Q3", "Q4", "H1", "H2", "OT", "full"]
+
+
+class BasketballLeg(BaseModel):
+    """Una pierna de baloncesto."""
+
+    equipo_local: str = Field(description="Nombre del equipo local tal como aparece.")
+    equipo_visitante: str = Field(description="Nombre del equipo visitante tal como aparece.")
+    competicion: str | None = Field(
+        default=None,
+        description="NBA, ACB, Euroliga, Eurocup, NCAA, etc. null si no se ve.",
+    )
+    fecha_evento: datetime | None = Field(
+        default=None,
+        description="Fecha del partido en formato YYYY-MM-DD si es visible. null si no aparece.",
+    )
+    mercado: BasketballMercado
+    seleccion: str = Field(
+        description=(
+            "Para moneyline/ganador_mitad/ganador_cuarto/race_to_puntos: nombre del equipo apostado. "
+            "Para handicap_*: nombre del equipo apostado (la línea va en `linea`). "
+            "Para over_under_puntos/mitad/cuarto: 'over' o 'under'. "
+            "Para over_under_puntos_equipo: nombre del equipo (el over/under va en `over_under`). "
+            "Para puntos/rebotes/asistencias/triples_jugador y combos "
+            "(asistencias_rebotes / puntos_rebotes / puntos_asistencias / puntos_rebotes_asistencias): "
+            "nombre del jugador. "
+            "Para doble_doble/triple_doble_jugador: nombre del jugador."
+        ),
+    )
+    linea: float | None = Field(
+        default=None,
+        description=(
+            "Línea numérica: handicap (-5.5, +7.5), totales del partido (210.5), "
+            "team total (103.5), puntos/rebotes/asistencias/triples y combos (24.5, 12.5, 18.5, 35.5), "
+            "race_to (20). null para moneyline, ganador_mitad/cuarto, "
+            "doble_doble y triple_doble. "
+            "Para mercados expresados como 'X+' (ej: '10+ asistencias') normaliza a X-0.5 con over_under='over'."
+        ),
+    )
+    over_under: Literal["over", "under"] | None = Field(
+        default=None,
+        description=(
+            "Para mercados de jugador (puntos/rebotes/asistencias/triples y sus combos), "
+            "over_under_puntos_equipo y doble_doble/triple_doble: 'over' o 'under' "
+            "(en doble/triple_doble equivale a 'si'/'no'). null para mercados donde "
+            "basta seleccion + linea."
+        ),
+    )
+    periodo: BasketballPeriodo | None = Field(
+        default=None,
+        description=(
+            "Periodo del partido al que se refiere la apuesta cuando es distinto del partido completo: "
+            "'Q1'/'Q2'/'Q3'/'Q4' (cuartos), 'H1'/'H2' (mitades), 'OT' (prórroga), 'full' (partido completo). "
+            "Útil sobre todo en player props por cuarto/mitad (ej: 'Paolo Banchero 5+ puntos 1º cuarto' → 'Q1'). "
+            "null cuando la apuesta se refiere al partido completo de forma implícita."
+        ),
+    )
+    prorroga_incluida: bool | None = Field(
+        default=None,
+        description=(
+            "true si el boleto indica explícitamente 'Prórroga incluida' / 'OT included'. "
+            "false si indica 'Sin prórroga' / 'Regular time only'. null si no se menciona."
+        ),
+    )
+    cuota_individual: float | None = Field(default=None, description="Cuota individual si se ve. null si no.")
+
+
+class BasketballBetPayload(BaseModel):
+    """Datos extraídos por el LLM desde un boleto de baloncesto."""
+
+    sport: Literal["basketball"] = "basketball"
+    casa_apuestas: str = Field(description="Bookmaker visible. 'desconocida' si no se ve.")
+    legs: list[BasketballLeg] = Field(default_factory=list)
+    cuota_total: float = Field(description="Cuota combinada final (>=1.0).")
+    stake_indicado: float | None = Field(default=None, description="Stake en unidades si el tipster lo declara. null si no.")
+    es_pick: bool = Field(description="true si la imagen es un boleto real. false si es ruido.")
+
+
+# ---------------------------------------------------------------------------
 # Unión discriminada
 # ---------------------------------------------------------------------------
 
 AnyBetPayload = Annotated[
-    TennisBetPayload | FootballBetPayload | DartsBetPayload,
+    TennisBetPayload | FootballBetPayload | DartsBetPayload | BasketballBetPayload,
     Field(discriminator="sport"),
 ]
 

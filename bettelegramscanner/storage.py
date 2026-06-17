@@ -15,6 +15,9 @@ log = logging.getLogger(__name__)
 
 PICKS_COLLECTION = "picks"
 TE_MATCHES_COLLECTION = "te_matches"
+API_BASKETBALL_COLLECTION = "api_basketball_games"
+ESPN_BASKET_COLLECTION = "espn_basket_games"
+BREF_BASKET_COLLECTION = "bref_basket_games"
 
 
 class PickStore:
@@ -23,6 +26,9 @@ class PickStore:
         self._db: AsyncIOMotorDatabase = self._client[db_name]
         self._col: AsyncIOMotorCollection = self._db[PICKS_COLLECTION]
         self._te: AsyncIOMotorCollection = self._db[TE_MATCHES_COLLECTION]
+        self._basket: AsyncIOMotorCollection = self._db[API_BASKETBALL_COLLECTION]
+        self._espn_basket: AsyncIOMotorCollection = self._db[ESPN_BASKET_COLLECTION]
+        self._bref_basket: AsyncIOMotorCollection = self._db[BREF_BASKET_COLLECTION]
 
     async def ensure_indexes(self) -> None:
         await self._col.create_index(
@@ -103,6 +109,63 @@ class PickStore:
         await self._te.update_one(
             {"_id": d.isoformat()},
             {"$set": {"matches": matches, "fetched_at": datetime.utcnow()}},
+            upsert=True,
+        )
+
+    # ---- cache de API-Sports Basketball ----
+
+    async def get_api_basketball_games(self, d: date) -> list[dict[str, Any]] | None:
+        doc = await self._basket.find_one({"_id": d.isoformat()})
+        if doc is None:
+            return None
+        return doc.get("games", [])
+
+    async def save_api_basketball_games(self, d: date, games: list[dict[str, Any]]) -> None:
+        for g in games:
+            md = g.get("match_date")
+            if isinstance(md, date) and not isinstance(md, datetime):
+                g["match_date"] = md.isoformat()
+        await self._basket.update_one(
+            {"_id": d.isoformat()},
+            {"$set": {"games": games, "fetched_at": datetime.utcnow()}},
+            upsert=True,
+        )
+
+    # ---- cache ESPN basketball ----
+
+    async def get_espn_basket_games(self, d: date) -> list[dict[str, Any]] | None:
+        doc = await self._espn_basket.find_one({"_id": d.isoformat()})
+        if doc is None:
+            return None
+        return doc.get("games", [])
+
+    async def save_espn_basket_games(self, d: date, games: list[dict[str, Any]]) -> None:
+        for g in games:
+            md = g.get("match_date")
+            if isinstance(md, date) and not isinstance(md, datetime):
+                g["match_date"] = md.isoformat()
+        await self._espn_basket.update_one(
+            {"_id": d.isoformat()},
+            {"$set": {"games": games, "fetched_at": datetime.utcnow()}},
+            upsert=True,
+        )
+
+    # ---- cache Basketball-Reference ----
+
+    async def get_bref_basket_games(self, d: date) -> list[dict[str, Any]] | None:
+        doc = await self._bref_basket.find_one({"_id": d.isoformat()})
+        if doc is None:
+            return None
+        return doc.get("games", [])
+
+    async def save_bref_basket_games(self, d: date, games: list[dict[str, Any]]) -> None:
+        for g in games:
+            md = g.get("match_date")
+            if isinstance(md, date) and not isinstance(md, datetime):
+                g["match_date"] = md.isoformat()
+        await self._bref_basket.update_one(
+            {"_id": d.isoformat()},
+            {"$set": {"games": games, "fetched_at": datetime.utcnow()}},
             upsert=True,
         )
 

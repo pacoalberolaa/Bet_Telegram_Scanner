@@ -26,6 +26,14 @@ TE_USER_AGENT: str = os.environ.get(
     "BetTelegramScannerBot/0.1 (research; +https://example.local)",
 )
 
+# API-Sports Basketball (v1.basketball.api-sports.io). Free tier: 100 req/día.
+API_BASKETBALL_BASE_URL: str = os.environ.get(
+    "API_BASKETBALL_BASE_URL", "https://v1.basketball.api-sports.io",
+)
+API_BASKETBALL_RATE_SECONDS: float = float(os.environ.get("API_BASKETBALL_RATE_SECONDS", "1.5"))
+API_BASKETBALL_FUZZY_THRESHOLD: int = int(os.environ.get("API_BASKETBALL_FUZZY_THRESHOLD", "75"))
+API_BASKETBALL_DAY_WINDOW: int = int(os.environ.get("API_BASKETBALL_DAY_WINDOW", "1"))
+
 # Output
 REPORTS_DIR: Path = Path(os.environ.get("BETTELEGRAMSCANNER_REPORTS_DIR", "reports"))
 

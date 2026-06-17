@@ -20,7 +20,9 @@ from .config import REPORTS_DIR, WORKERS, setup_logging
 from .ingest_export import ExportIngest
 from .models import PickDocument
 from .pipeline import process_candidate
+from .quality import LowConfidenceLogger
 from .reports import export_xlsx
+from .resolver_basketball import BasketballResultsClient
 from .resolver_tennis import TennisExplorerClient
 from .storage import store_from_env
 from .vision import VisionExtractor
@@ -54,7 +56,9 @@ async def _run_chunks(
     store,
     vision: VisionExtractor,
     te: TennisExplorerClient,
+    api_basket: BasketballResultsClient,
     concurrency: int,
+    low_conf: LowConfidenceLogger,
 ) -> tuple[int, int]:
     sem = asyncio.Semaphore(concurrency)
     totals = [0, 0]  # [seen, persisted]
@@ -67,7 +71,7 @@ async def _run_chunks(
             seen = persisted = 0
             for candidate in ingest.iter_in_window(*chunk):
                 seen += 1
-                pick = await process_candidate(candidate, store, vision, te)
+                pick = await process_candidate(candidate, store, vision, te, api_basket, low_conf=low_conf)
                 if pick is not None:
                     persisted += 1
             async with totals_lock:
@@ -86,13 +90,15 @@ async def _run() -> None:
     await store.ensure_indexes()
     vision = VisionExtractor()
     te = TennisExplorerClient(store)
+    api_basket = BasketballResultsClient(store)
     ingest = ExportIngest(req.export_folder, tipster=req.tipster)
+    low_conf = LowConfidenceLogger(REPORTS_DIR / "low_confidence.jsonl")
 
     chunks = month_chunks(req.start, req.end)
     log.info("Ventana partida en %d meses; workers=%d", len(chunks), WORKERS)
 
     try:
-        seen, persisted = await _run_chunks(chunks, ingest, store, vision, te, WORKERS)
+        seen, persisted = await _run_chunks(chunks, ingest, store, vision, te, api_basket, WORKERS, low_conf)
         log.info("TOTAL vistos=%d persistidos=%d", seen, persisted)
 
         raw_docs = await store.iter_picks(req.tipster)
@@ -109,6 +115,7 @@ async def _run() -> None:
         print(f"Excel: {xlsx_path}")
     finally:
         await te.aclose()
+        await api_basket.aclose()
         store.close()
 
 

@@ -7,7 +7,9 @@ from .analytics import profit_units
 from .config import DEDUP_WINDOW_HOURS, PHASH_HAMMING_MAX
 from .dedup import compute_phash, find_duplicate
 from .ingest_export import MessageCandidate
-from .models import DartsBetPayload, FootballBetPayload, PickDocument, PickResolution, TennisBetPayload
+from .models import BasketballBetPayload, DartsBetPayload, FootballBetPayload, PickDocument, PickResolution, TennisBetPayload
+from .quality import LowConfidenceLogger, detect_low_confidence
+from .resolver_basketball import BasketballResultsClient, resolve_basketball_pick
 from .resolver_darts import resolve_darts_pick
 from .resolver_football import resolve_football_pick
 from .resolver_tennis import TennisExplorerClient, resolve_pick
@@ -16,8 +18,20 @@ from .vision import VisionExtractor
 
 log = logging.getLogger(__name__)
 
+_MEDIA_TYPE_BY_EXT = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
 
-async def _resolve(payload, event_date, te: TennisExplorerClient) -> PickResolution:
+
+def _guess_media_type(path) -> str:
+    return _MEDIA_TYPE_BY_EXT.get(path.suffix.lower(), "image/jpeg")
+
+
+async def _resolve(payload, event_date, te: TennisExplorerClient, api_basket: BasketballResultsClient) -> PickResolution:
     """Enruta la resolución al resolver correcto según el deporte."""
     if isinstance(payload, TennisBetPayload):
         return await resolve_pick(payload.legs, event_date, te)
@@ -25,6 +39,8 @@ async def _resolve(payload, event_date, te: TennisExplorerClient) -> PickResolut
         return await resolve_football_pick(payload, event_date)
     if isinstance(payload, DartsBetPayload):
         return await resolve_darts_pick(payload, event_date)
+    if isinstance(payload, BasketballBetPayload):
+        return await resolve_basketball_pick(payload, event_date, api_basket)
     return PickResolution(status="no_verificable", motivo=f"deporte desconocido: {type(payload).__name__}")
 
 
@@ -33,6 +49,8 @@ async def process_candidate(
     store: PickStore,
     vision: VisionExtractor,
     te: TennisExplorerClient,
+    api_basket: BasketballResultsClient,
+    low_conf: LowConfidenceLogger | None = None,
 ) -> PickDocument | None:
     tipster = candidate.channel
 
@@ -68,7 +86,7 @@ async def process_candidate(
         return None
 
     try:
-        payload = await vision.extract(image_bytes)
+        payload = await vision.extract(image_bytes, media_type=_guess_media_type(candidate.photo_path))
     except Exception:
         log.exception("Fallo extracción IA tipster=%s msg=%s", tipster, candidate.message_id)
         return None
@@ -76,6 +94,11 @@ async def process_candidate(
     if not payload.es_pick:
         log.info("Descartado: no es pick (tipster=%s msg=%s)", tipster, candidate.message_id)
         return None
+
+    if low_conf is not None:
+        reasons = detect_low_confidence(payload)
+        if reasons:
+            await low_conf.log(candidate, payload, reasons)
 
     pick = PickDocument(
         tipster=tipster,
@@ -88,7 +111,7 @@ async def process_candidate(
     await store.insert_pick(pick)
 
     try:
-        resolution = await _resolve(payload, candidate.date_utc_naive.date(), te)
+        resolution = await _resolve(payload, candidate.date_utc_naive.date(), te, api_basket)
     except Exception:
         log.exception("Fallo resolviendo tipster=%s msg=%s", tipster, candidate.message_id)
         resolution = PickResolution(status="no_verificable", motivo="error en resolver")
