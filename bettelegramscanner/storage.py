@@ -112,5 +112,5 @@ class PickStore:
 
 def store_from_env() -> PickStore:
     uri = os.environ["MONGO_URI"]
-    db_name = os.environ.get("MONGO_DB", "betscanner")
+    db_name = os.environ.get("MONGO_DB", "bettelegramscanner")
     return PickStore(uri, db_name)

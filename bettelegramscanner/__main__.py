@@ -1,4 +1,4 @@
-"""Entry point: `python -m betscanner`.
+"""Entry point: `python -m bettelegramscanner`.
 
 CLI -> export ingest -> particion por meses con N workers -> pipeline -> Excel.
 """
@@ -9,7 +9,10 @@ import logging
 from calendar import monthrange
 from datetime import datetime
 
+from dotenv import load_dotenv
 from pydantic import TypeAdapter
+
+load_dotenv()
 
 from .analytics import build_report
 from .cli import collect_request
@@ -22,7 +25,7 @@ from .resolver_tennis import TennisExplorerClient
 from .storage import store_from_env
 from .vision import VisionExtractor
 
-log = logging.getLogger("betscanner")
+log = logging.getLogger("bettelegramscanner")
 
 _PICK_ADAPTER = TypeAdapter(PickDocument)
 

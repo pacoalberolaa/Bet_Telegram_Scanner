@@ -20,7 +20,7 @@ from .models import AnyBetPayload, DartsBetPayload, FootballBetPayload, TennisBe
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "claude-3-5-haiku-20241022"
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 
 # ---------------------------------------------------------------------------

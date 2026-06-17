@@ -14,23 +14,23 @@ LLM_PAUSE_SECONDS: float = 0.8
 BATCH_LOG_EVERY: int = 25
 
 # Dedup visual
-DEDUP_WINDOW_HOURS: int = int(os.environ.get("BETSCANNER_DEDUP_WINDOW_HOURS", "72"))
-PHASH_HAMMING_MAX: int = int(os.environ.get("BETSCANNER_PHASH_HAMMING_MAX", "8"))
+DEDUP_WINDOW_HOURS: int = int(os.environ.get("BETTELEGRAMSCANNER_DEDUP_WINDOW_HOURS", "72"))
+PHASH_HAMMING_MAX: int = int(os.environ.get("BETTELEGRAMSCANNER_PHASH_HAMMING_MAX", "8"))
 
 # Tennis Explorer
-TE_RATE_SECONDS: float = float(os.environ.get("BETSCANNER_TE_RATE_SECONDS", "2.5"))
-TE_FUZZY_THRESHOLD: int = int(os.environ.get("BETSCANNER_TE_FUZZY_THRESHOLD", "80"))
-TE_DAY_WINDOW: int = int(os.environ.get("BETSCANNER_TE_DAY_WINDOW", "2"))
+TE_RATE_SECONDS: float = float(os.environ.get("BETTELEGRAMSCANNER_TE_RATE_SECONDS", "2.5"))
+TE_FUZZY_THRESHOLD: int = int(os.environ.get("BETTELEGRAMSCANNER_TE_FUZZY_THRESHOLD", "80"))
+TE_DAY_WINDOW: int = int(os.environ.get("BETTELEGRAMSCANNER_TE_DAY_WINDOW", "2"))
 TE_USER_AGENT: str = os.environ.get(
-    "BETSCANNER_TE_USER_AGENT",
-    "BetScannerBot/0.1 (research; +https://example.local)",
+    "BETTELEGRAMSCANNER_TE_USER_AGENT",
+    "BetTelegramScannerBot/0.1 (research; +https://example.local)",
 )
 
 # Output
-REPORTS_DIR: Path = Path(os.environ.get("BETSCANNER_REPORTS_DIR", "reports"))
+REPORTS_DIR: Path = Path(os.environ.get("BETTELEGRAMSCANNER_REPORTS_DIR", "reports"))
 
 # Concurrencia (workers que procesan meses en paralelo)
-WORKERS: int = int(os.environ.get("BETSCANNER_WORKERS", "3"))
+WORKERS: int = int(os.environ.get("BETTELEGRAMSCANNER_WORKERS", "3"))
 
 
 def setup_logging(level: int = logging.INFO) -> None:
