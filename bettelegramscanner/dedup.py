@@ -14,16 +14,16 @@ from .storage import PickStore
 log = logging.getLogger(__name__)
 
 
-def compute_phash(image_bytes: bytes, hash_size: int = 8) -> int:
-    """pHash de 64 bits (hash_size=8 → 8x8 = 64 bits)."""
+def compute_phash(image_bytes: bytes, hash_size: int = 8) -> str:
+    """pHash de 64 bits devuelto como hex (Mongo no admite uint64)."""
     with Image.open(io.BytesIO(image_bytes)) as img:
         img = img.convert("RGB")
         h = imagehash.phash(img, hash_size=hash_size)
-    return int(str(h), 16)
+    return str(h)
 
 
-def hamming_distance(a: int, b: int) -> int:
-    return (a ^ b).bit_count()
+def hamming_distance(a: str, b: str) -> int:
+    return (int(a, 16) ^ int(b, 16)).bit_count()
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,7 @@ class DedupHit:
 async def find_duplicate(
     store: PickStore,
     tipster: str,
-    phash: int,
+    phash: str,
     date_utc: datetime,
     window_hours: int,
     max_distance: int,
@@ -48,7 +48,11 @@ async def find_duplicate(
     candidates = await store.candidates_for_dedup(tipster, date_utc, window_hours)
     best: DedupHit | None = None
     for doc in candidates:
-        d = hamming_distance(phash, int(doc["phash"]))
+        raw = doc.get("phash")
+        if raw is None:
+            continue
+        other = raw if isinstance(raw, str) else format(int(raw), "016x")
+        d = hamming_distance(phash, other)
         if d > max_distance:
             continue
         if best is None or d < best.distance:

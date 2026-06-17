@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from typing import Any
 
@@ -30,6 +30,25 @@ log = logging.getLogger(__name__)
 ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball"
 ESPN_LEAGUES = ("nba", "wnba", "mens-college-basketball", "womens-college-basketball")
 ESPN_RATE_SECONDS = 0.6  # ~100 req/min, conservador
+
+
+@dataclass
+class EspnPlayerStat:
+    """Box score de un jugador en un partido (lo que ESPN expone en summary)."""
+    name: str
+    team: str  # nombre canónico del equipo
+    minutes: int | None = None
+    points: int | None = None
+    rebounds: int | None = None
+    assists: int | None = None
+    threes_made: int | None = None
+    steals: int | None = None
+    blocks: int | None = None
+
+    def double_count(self) -> int:
+        """Cuántas categorías mayores >=10 (para doble-doble/triple-doble)."""
+        cats = [self.points, self.rebounds, self.assists, self.steals, self.blocks]
+        return sum(1 for v in cats if v is not None and v >= 10)
 
 
 def _map_status(espn_name: str) -> str:
@@ -133,8 +152,10 @@ class EspnBasketClient:
             timeout=20.0,
         )
         self._memory: dict[date, list[ApiBasketGame]] = {}
+        self._boxscore_memory: dict[tuple[str, int], list[EspnPlayerStat]] = {}
         self._fetch_lock = asyncio.Lock()
         self._date_locks: dict[date, asyncio.Lock] = {}
+        self._boxscore_locks: dict[tuple[str, int], asyncio.Lock] = {}
         self._locks_lock = asyncio.Lock()
 
     async def aclose(self) -> None:
@@ -204,6 +225,129 @@ class EspnBasketClient:
                 if score >= API_BASKETBALL_FUZZY_THRESHOLD and (best is None or score > best[0]):
                     best = (score, g)
         return best[1] if best else None
+
+    # ------------------------------------------------------------------
+    # Boxscore por jugador (para player props)
+    # ------------------------------------------------------------------
+
+    async def _boxscore_lock(self, key: tuple[str, int]) -> asyncio.Lock:
+        async with self._locks_lock:
+            lock = self._boxscore_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._boxscore_locks[key] = lock
+            return lock
+
+    async def fetch_boxscore(
+        self, event_id: int, league: str,
+    ) -> list[EspnPlayerStat] | None:
+        """Devuelve la lista de jugadores con sus stats. None si no se pudo.
+        `league` es la clave ESPN (nba, wnba, mens-college-basketball, womens-college-basketball)
+        que viene en game.league con prefijo 'ESPN/'."""
+        key = (league, event_id)
+        if key in self._boxscore_memory:
+            return self._boxscore_memory[key]
+
+        lock = await self._boxscore_lock(key)
+        async with lock:
+            if key in self._boxscore_memory:
+                return self._boxscore_memory[key]
+            cached = await self._store.get_espn_basket_boxscore(league, event_id)
+            if cached is not None:
+                players = [_player_from_dict(p) for p in cached]
+                self._boxscore_memory[key] = players
+                return players
+
+            try:
+                async with self._fetch_lock:
+                    await asyncio.sleep(self._rate)
+                    r = await self._client.get(
+                        f"/{league}/summary", params={"event": event_id},
+                    )
+                if r.status_code != 200:
+                    log.warning("ESPN boxscore %s/%s -> HTTP %s", league, event_id, r.status_code)
+                    return None
+                players = _parse_boxscore(r.json())
+            except Exception:
+                log.exception("Fallo fetch boxscore ESPN %s/%s", league, event_id)
+                return None
+
+            await self._store.save_espn_basket_boxscore(
+                league, event_id, [asdict(p) for p in players],
+            )
+            self._boxscore_memory[key] = players
+            return players
+
+
+def _parse_boxscore(data: dict) -> list[EspnPlayerStat]:
+    """Extrae players + stats del JSON de ESPN summary.
+
+    Estructura esperada:
+        boxscore.players = [{team:{...}, statistics:[{names:[...], athletes:[{athlete:{displayName},stats:[...]}]}]}, ...]
+    """
+    out: list[EspnPlayerStat] = []
+    box = (data.get("boxscore") or {})
+    for team_block in box.get("players") or []:
+        team_name = ((team_block.get("team") or {}).get("displayName")
+                     or (team_block.get("team") or {}).get("name") or "")
+        for stat_group in team_block.get("statistics") or []:
+            names = [n.upper() for n in stat_group.get("names") or []]
+            for ath in stat_group.get("athletes") or []:
+                athlete = ath.get("athlete") or {}
+                # `didNotPlay` es la señal canónica para DNP. NO usar `active`,
+                # que en ESPN significa "sigue en el roster", no "jugó".
+                if ath.get("didNotPlay"):
+                    continue
+                stats = ath.get("stats") or []
+                if not stats:
+                    continue
+                row = dict(zip(names, stats))
+                out.append(EspnPlayerStat(
+                    name=athlete.get("displayName") or athlete.get("shortName") or "",
+                    team=team_name,
+                    minutes=_safe_int(row.get("MIN")),
+                    points=_safe_int(row.get("PTS")),
+                    rebounds=_safe_int(row.get("REB")),
+                    assists=_safe_int(row.get("AST")),
+                    threes_made=_three_pt_made(row.get("3PT")),
+                    steals=_safe_int(row.get("STL")),
+                    blocks=_safe_int(row.get("BLK")),
+                ))
+    return out
+
+
+def _safe_int(v: Any) -> int | None:
+    if v is None:
+        return None
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _three_pt_made(v: Any) -> int | None:
+    """ESPN expone 3PT como 'M-A' (ej: '4-9'). Extraemos los made."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    m = re.match(r"^(\d+)\s*-\s*\d+$", s)
+    if m:
+        return int(m.group(1))
+    return _safe_int(s)
+
+
+def _player_from_dict(d: dict[str, Any]) -> EspnPlayerStat:
+    return EspnPlayerStat(
+        name=d.get("name", ""),
+        team=d.get("team", ""),
+        minutes=d.get("minutes"),
+        points=d.get("points"),
+        rebounds=d.get("rebounds"),
+        assists=d.get("assists"),
+        threes_made=d.get("threes_made"),
+        steals=d.get("steals"),
+        blocks=d.get("blocks"),
+    )
 
 
 def _normalize(s: str) -> str:

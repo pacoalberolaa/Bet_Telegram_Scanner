@@ -340,7 +340,7 @@ class PickDocument(BaseModel):
     tipster: str
     message_id: int
     date_utc: datetime
-    phash: int
+    phash: str
     phash_bits: int = 64
     text_raw: str
     payload: AnyBetPayload

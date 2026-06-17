@@ -158,6 +158,11 @@ class BrefBasketClient:
                         r = await self._client.get(
                             path, params={"month": d.month, "day": d.day, "year": d.year},
                         )
+                    if r.status_code == 404:
+                        # BR devuelve 404 cuando no hay partidos esa fecha (típico
+                        # en off-season). Es una respuesta estable; la cacheamos vacía.
+                        fetch_ok_any = True
+                        continue
                     if r.status_code != 200:
                         log.warning("BR %s %s -> HTTP %s", label, d, r.status_code)
                         continue

@@ -10,12 +10,12 @@ LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(name)-22s | %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 TELEGRAM_PAUSE_SECONDS: float = 1.2
-LLM_PAUSE_SECONDS: float = 0.8
+LLM_PAUSE_SECONDS: float = 0.0
 BATCH_LOG_EVERY: int = 25
 
 # Dedup visual
 DEDUP_WINDOW_HOURS: int = int(os.environ.get("BETTELEGRAMSCANNER_DEDUP_WINDOW_HOURS", "72"))
-PHASH_HAMMING_MAX: int = int(os.environ.get("BETTELEGRAMSCANNER_PHASH_HAMMING_MAX", "8"))
+PHASH_HAMMING_MAX: int = int(os.environ.get("BETTELEGRAMSCANNER_PHASH_HAMMING_MAX", "1"))
 
 # Tennis Explorer
 TE_RATE_SECONDS: float = float(os.environ.get("BETTELEGRAMSCANNER_TE_RATE_SECONDS", "2.5"))

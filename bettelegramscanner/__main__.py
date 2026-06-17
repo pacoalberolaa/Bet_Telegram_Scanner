@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from calendar import monthrange
 from datetime import datetime
 
@@ -21,7 +22,7 @@ from .ingest_export import ExportIngest
 from .models import PickDocument
 from .pipeline import process_candidate
 from .quality import LowConfidenceLogger
-from .reports import export_xlsx
+from .reports import export_unverified_xlsx, export_xlsx
 from .resolver_basketball import BasketballResultsClient
 from .resolver_tennis import TennisExplorerClient
 from .storage import store_from_env
@@ -108,11 +109,15 @@ async def _run() -> None:
         log.info("REPORT %s", report.render())
         print("\n" + report.render())
 
-        safe = req.tipster.replace("/", "_").replace("\\", "_").replace(" ", "_")
+        safe = re.sub(r'[<>:"/\\|?*\s]+', "_", req.tipster).strip("_") or "tipster"
         stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         xlsx_path = REPORTS_DIR / f"{safe}_{req.start.date()}_{req.end.date()}_{stamp}.xlsx"
         export_xlsx(xlsx_path, report, picks)
         print(f"Excel: {xlsx_path}")
+
+        unverif_path = REPORTS_DIR / f"{safe}_{req.start.date()}_{req.end.date()}_{stamp}_no_verificables.xlsx"
+        if export_unverified_xlsx(unverif_path, picks) is not None:
+            print(f"Excel no_verificables: {unverif_path}")
     finally:
         await te.aclose()
         await api_basket.aclose()

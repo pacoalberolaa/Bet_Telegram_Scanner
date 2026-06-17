@@ -21,6 +21,7 @@ from .models import AnyBetPayload, BasketballBetPayload, DartsBetPayload, Footba
 log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+FALLBACK_MODEL = "claude-opus-4-7"
 
 
 # ---------------------------------------------------------------------------
@@ -35,8 +36,17 @@ class SportDetection(BaseModel):
 DETECTION_PROMPT = """Eres un clasificador de imágenes de boletos de apuestas deportivas.
 
 Devuelve SOLO el JSON con dos campos:
-- es_pick (boolean): true si la imagen es un boleto/ticket de apuesta con selección y cuota visible.
+- es_pick (boolean): true si la imagen es un boleto/ticket de apuesta NUEVO con selección y cuota visible.
   false si es cualquier otra cosa: stats, rachas, memes, banners, capturas de menú, mensajes de texto sin ticket.
+  false TAMBIÉN si la imagen es una REPUBLICACIÓN CELEBRATORIA de un pick ya resuelto:
+    * banners grandes con texto tipo "¡APUESTA ACERTADA!", "¡ACERTADA!", "¡GANADA!", "WINNER",
+      "¡SEGUIMOOOOOS!", "¡PERDIDA!", "¡FALLADA!", "¡QUÉ PENA!".
+    * checks/ticks verdes GIGANTES superpuestos al ticket, cruces rojas grandes, coronas, fuegos artificiales,
+      llamas, billetes/dinero flotantes, fondos verde fluor o rojo brillante.
+    * marcador final del partido pintado dentro del propio ticket junto a los equipos
+      (ej: "TOR Raptors 102 / CLE Cavaliers 114") cuando claramente es resultado YA jugado,
+      no la previa.
+  Estos recaps son duplicados de un pick original que el tipster ya publicó y NO deben procesarse de nuevo.
 - sport (string): el deporte del boleto. Valores permitidos: "tennis", "football", "darts", "basketball", "other".
   Solo aplica cuando es_pick=true. Si es_pick=false, pon "other".
 
@@ -376,9 +386,11 @@ _DISCARD_PAYLOAD = TennisBetPayload(
 
 
 class VisionExtractor:
-    def __init__(self, api_key: str | None = None, model: str = DEFAULT_MODEL) -> None:
+    def __init__(self, api_key: str | None = None, model: str = DEFAULT_MODEL,
+                 fallback_model: str | None = FALLBACK_MODEL) -> None:
         self._client = AsyncAnthropic(api_key=api_key or os.environ["ANTHROPIC_API_KEY"])
         self._model = model
+        self._fallback_model = fallback_model
 
     # ------------------------------------------------------------------
     # Fase 1: detección rápida de deporte
@@ -410,7 +422,7 @@ class VisionExtractor:
             output_format=SportDetection,
         )
         await asyncio.sleep(LLM_PAUSE_SECONDS)
-        return message.output_parsed
+        return message.parsed_output
 
     # ------------------------------------------------------------------
     # Fase 2: extracción especializada
@@ -422,11 +434,11 @@ class VisionExtractor:
         media_type: str,
         prompt: str,
         output_model: type,
+        model: str | None = None,
     ):
         message = await self._client.messages.parse(
-            model=self._model,
+            model=model or self._model,
             max_tokens=2048,
-            thinking={"type": "adaptive"},
             system=[
                 {
                     "type": "text",
@@ -449,7 +461,27 @@ class VisionExtractor:
             output_format=output_model,
         )
         await asyncio.sleep(LLM_PAUSE_SECONDS)
-        return message.output_parsed
+        return message.parsed_output
+
+    async def _extract_with_fallback(
+        self, b64: str, media_type: str, prompt: str, output_model: type,
+    ):
+        """Extrae con el modelo barato; si dice es_pick=true pero legs=[],
+        reintenta con el modelo potente. Casi todas las imágenes salen al primer
+        intento; el fallback solo dispara en tickets que haiku no supo leer."""
+        payload = await self._extract_typed(b64, media_type, prompt, output_model)
+        if (
+            self._fallback_model
+            and getattr(payload, "es_pick", False)
+            and not getattr(payload, "legs", None)
+        ):
+            log.info("Vision haiku devolvió legs=[]; reintento con %s", self._fallback_model)
+            retry = await self._extract_typed(
+                b64, media_type, prompt, output_model, model=self._fallback_model,
+            )
+            if getattr(retry, "legs", None):
+                return retry
+        return payload
 
     # ------------------------------------------------------------------
     # API pública
@@ -465,13 +497,13 @@ class VisionExtractor:
             return _DISCARD_PAYLOAD
 
         if detection.sport == "tennis":
-            return await self._extract_typed(b64, media_type, TENNIS_PROMPT, TennisBetPayload)
+            return await self._extract_with_fallback(b64, media_type, TENNIS_PROMPT, TennisBetPayload)
         if detection.sport == "football":
-            return await self._extract_typed(b64, media_type, FOOTBALL_PROMPT, FootballBetPayload)
+            return await self._extract_with_fallback(b64, media_type, FOOTBALL_PROMPT, FootballBetPayload)
         if detection.sport == "darts":
-            return await self._extract_typed(b64, media_type, DARTS_PROMPT, DartsBetPayload)
+            return await self._extract_with_fallback(b64, media_type, DARTS_PROMPT, DartsBetPayload)
         if detection.sport == "basketball":
-            return await self._extract_typed(b64, media_type, BASKETBALL_PROMPT, BasketballBetPayload)
+            return await self._extract_with_fallback(b64, media_type, BASKETBALL_PROMPT, BasketballBetPayload)
 
         log.warning("Deporte no soportado detectado: %s — descartando imagen.", detection.sport)
         return _DISCARD_PAYLOAD

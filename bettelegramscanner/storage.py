@@ -17,6 +17,7 @@ PICKS_COLLECTION = "picks"
 TE_MATCHES_COLLECTION = "te_matches"
 API_BASKETBALL_COLLECTION = "api_basketball_games"
 ESPN_BASKET_COLLECTION = "espn_basket_games"
+ESPN_BASKET_BOXSCORE_COLLECTION = "espn_basket_boxscores"
 BREF_BASKET_COLLECTION = "bref_basket_games"
 
 
@@ -28,6 +29,7 @@ class PickStore:
         self._te: AsyncIOMotorCollection = self._db[TE_MATCHES_COLLECTION]
         self._basket: AsyncIOMotorCollection = self._db[API_BASKETBALL_COLLECTION]
         self._espn_basket: AsyncIOMotorCollection = self._db[ESPN_BASKET_COLLECTION]
+        self._espn_basket_box: AsyncIOMotorCollection = self._db[ESPN_BASKET_BOXSCORE_COLLECTION]
         self._bref_basket: AsyncIOMotorCollection = self._db[BREF_BASKET_COLLECTION]
 
     async def ensure_indexes(self) -> None:
@@ -53,6 +55,27 @@ class PickStore:
         )
         return doc is not None
 
+    async def get_pick(self, tipster: str, message_id: int) -> dict[str, Any] | None:
+        return await self._col.find_one({"tipster": tipster, "message_id": message_id})
+
+    async def update_payload(self, tipster: str, message_id: int, payload: dict[str, Any]) -> None:
+        await self._col.update_one(
+            {"tipster": tipster, "message_id": message_id},
+            {"$set": {"payload": payload}},
+        )
+
+    async def replace_pick_identity(
+        self, tipster: str, old_message_id: int,
+        new_message_id: int, new_date_utc: datetime,
+    ) -> None:
+        """Sustituye message_id y date_utc de un pick existente por los del candidato
+        más antiguo. Usado por el dedup semántico para preservar la fecha del pendiente
+        cuando llega después un recap que es el mismo pick."""
+        await self._col.update_one(
+            {"tipster": tipster, "message_id": old_message_id},
+            {"$set": {"message_id": new_message_id, "date_utc": new_date_utc}},
+        )
+
     async def candidates_for_dedup(
         self, tipster: str, around: datetime, window_hours: int,
     ) -> list[dict[str, Any]]:
@@ -63,6 +86,21 @@ class PickStore:
                 "date_utc": {"$gte": around - delta, "$lte": around + delta},
             },
             projection={"phash": 1, "message_id": 1, "date_utc": 1},
+        )
+        return [doc async for doc in cursor]
+
+    async def recent_picks_full(
+        self, tipster: str, around: datetime, window_hours: int,
+    ) -> list[dict[str, Any]]:
+        """Devuelve picks completos del tipster en ventana ±window_hours.
+        Usado para dedup semántico post-visión (mismo jugador/mercado/línea)."""
+        delta = timedelta(hours=window_hours)
+        cursor = self._col.find(
+            {
+                "tipster": tipster,
+                "date_utc": {"$gte": around - delta, "$lte": around + delta},
+            },
+            projection={"message_id": 1, "date_utc": 1, "payload": 1},
         )
         return [doc async for doc in cursor]
 
@@ -147,6 +185,25 @@ class PickStore:
         await self._espn_basket.update_one(
             {"_id": d.isoformat()},
             {"$set": {"games": games, "fetched_at": datetime.utcnow()}},
+            upsert=True,
+        )
+
+    # ---- cache ESPN boxscore por evento ----
+
+    async def get_espn_basket_boxscore(
+        self, league: str, event_id: int,
+    ) -> list[dict[str, Any]] | None:
+        doc = await self._espn_basket_box.find_one({"_id": f"{league}:{event_id}"})
+        if doc is None:
+            return None
+        return doc.get("players", [])
+
+    async def save_espn_basket_boxscore(
+        self, league: str, event_id: int, players: list[dict[str, Any]],
+    ) -> None:
+        await self._espn_basket_box.update_one(
+            {"_id": f"{league}:{event_id}"},
+            {"$set": {"players": players, "fetched_at": datetime.utcnow()}},
             upsert=True,
         )
 

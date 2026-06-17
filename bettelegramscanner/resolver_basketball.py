@@ -28,7 +28,7 @@ from rapidfuzz import fuzz
 from .api_basketball import ApiBasketGame, ApiBasketballClient
 from .models import BasketballBetPayload, BasketballLeg, LegResolution, PickResolution
 from .source_bref import BrefBasketClient
-from .source_espn_basket import EspnBasketClient
+from .source_espn_basket import EspnBasketClient, EspnPlayerStat
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +97,18 @@ class BasketballResultsClient:
             return g, "api_sports"
         self.hits["miss"] += 1
         return None, None
+
+    async def fetch_players(
+        self, game: ApiBasketGame, source: str,
+    ) -> list[EspnPlayerStat] | None:
+        """Devuelve box score por jugador. Solo ESPN lo expone gratis."""
+        if source != "espn":
+            return None
+        # game.league viene como "ESPN/nba", "ESPN/wnba", ...
+        if not game.league.startswith("ESPN/"):
+            return None
+        league_key = game.league.split("/", 1)[1]
+        return await self.espn.fetch_boxscore(game.game_id, league_key)
 
     def miss_motivo(self, leg: BasketballLeg, around: date) -> str:
         """Compone un motivo informativo cuando ninguna fuente encontró el partido."""
@@ -178,7 +190,118 @@ def _team_pts_for_period(
     return None, None
 
 
-def resolve_leg(leg: BasketballLeg, game: ApiBasketGame, source: str) -> LegResolution:
+def _player_stat_value(p: EspnPlayerStat, mercado: str) -> int | None:
+    """Devuelve el valor numérico apropiado del jugador para el mercado, o None
+    si falta algún componente."""
+    if mercado == "puntos_jugador":
+        return p.points
+    if mercado == "rebotes_jugador":
+        return p.rebounds
+    if mercado == "asistencias_jugador":
+        return p.assists
+    if mercado == "triples_jugador":
+        return p.threes_made
+    if mercado == "asistencias_rebotes_jugador":
+        if p.assists is None or p.rebounds is None: return None
+        return p.assists + p.rebounds
+    if mercado == "puntos_rebotes_jugador":
+        if p.points is None or p.rebounds is None: return None
+        return p.points + p.rebounds
+    if mercado == "puntos_asistencias_jugador":
+        if p.points is None or p.assists is None: return None
+        return p.points + p.assists
+    if mercado == "puntos_rebotes_asistencias_jugador":
+        if p.points is None or p.rebounds is None or p.assists is None: return None
+        return p.points + p.rebounds + p.assists
+    return None
+
+
+def _find_player(players: list[EspnPlayerStat], name: str,
+                 home: str, away: str, threshold: int = 75) -> EspnPlayerStat | None:
+    """Fuzzy match del jugador apostado contra el roster del partido."""
+    name_n = _normalize(name)
+    if not name_n:
+        return None
+    best: tuple[int, EspnPlayerStat] | None = None
+    for p in players:
+        score = int(fuzz.token_set_ratio(name_n, _normalize(p.name)))
+        # Bonus si el equipo del jugador casa con local/visitante
+        if _team_score(p.team, home) > 80 or _team_score(p.team, away) > 80:
+            score += 3
+        if score >= threshold and (best is None or score > best[0]):
+            best = (score, p)
+    return best[1] if best else None
+
+
+def _resolve_player_leg(
+    leg: BasketballLeg, players: list[EspnPlayerStat],
+    home: str, away: str, marker: str,
+) -> LegResolution:
+    mercado = leg.mercado
+    player = _find_player(players, leg.seleccion, home, away)
+    if player is None:
+        return LegResolution(
+            status="no_verificable",
+            motivo=f"jugador '{leg.seleccion}' no encontrado en boxscore",
+            marcador=marker,
+        )
+
+    # doble_doble / triple_doble: si/no según over_under
+    if mercado in ("doble_doble_jugador", "triple_doble_jugador"):
+        needed = 2 if mercado == "doble_doble_jugador" else 3
+        # Si no tiene MIN o jugó 0, contamos como "no ocurrió"
+        achieved = player.double_count() >= needed
+        sel = (leg.over_under or "").lower()
+        if sel not in ("over", "under"):
+            return LegResolution(
+                status="no_verificable",
+                motivo=f"{mercado}: over_under ausente o inválido",
+                marcador=marker,
+            )
+        bet_yes = (sel == "over")
+        won = (bet_yes and achieved) or (not bet_yes and not achieved)
+        return LegResolution(
+            status="ganada" if won else "perdida",
+            motivo=f"{player.name}: pts={player.points} reb={player.rebounds} ast={player.assists}",
+            marcador=marker,
+        )
+
+    # Player props over/under
+    if leg.linea is None:
+        return LegResolution(status="no_verificable", motivo="línea ausente", marcador=marker)
+    sel = (leg.over_under or "").lower()
+    if sel not in ("over", "under"):
+        return LegResolution(
+            status="no_verificable",
+            motivo=f"{mercado}: over_under ausente o inválido",
+            marcador=marker,
+        )
+
+    value = _player_stat_value(player, mercado)
+    if value is None:
+        return LegResolution(
+            status="no_verificable",
+            motivo=f"{player.name}: stat para {mercado} no disponible",
+            marcador=marker,
+        )
+
+    if abs(value - leg.linea) < 1e-9:
+        return LegResolution(
+            status="void", motivo=f"push ({player.name} {value})", marcador=marker,
+        )
+    is_over = value > leg.linea
+    won = (sel == "over" and is_over) or (sel == "under" and not is_over)
+    return LegResolution(
+        status="ganada" if won else "perdida",
+        motivo=f"{player.name}: {value} vs {leg.linea} ({sel})",
+        marcador=marker,
+    )
+
+
+def resolve_leg(
+    leg: BasketballLeg, game: ApiBasketGame, source: str,
+    players: list[EspnPlayerStat] | None = None,
+) -> LegResolution:
     marker = _marker(game)
 
     if game.status in _NOT_PLAYED:
@@ -195,11 +318,13 @@ def resolve_leg(leg: BasketballLeg, game: ApiBasketGame, source: str) -> LegReso
     mercado = leg.mercado
 
     if mercado in _PLAYER_MARKETS:
-        return LegResolution(
-            status="no_verificable",
-            motivo=f"mercado de jugador '{mercado}' requiere box por jugador (no implementado)",
-            marcador=marker,
-        )
+        if players is None:
+            return LegResolution(
+                status="no_verificable",
+                motivo=f"mercado de jugador '{mercado}' requiere box por jugador (fuente {source} no lo expone)",
+                marcador=marker,
+            )
+        return _resolve_player_leg(leg, players, game.team_home, game.team_away, marker)
 
     if mercado == "race_to_puntos":
         return LegResolution(
@@ -312,7 +437,13 @@ async def resolve_basketball_pick(
 ) -> PickResolution:
     leg_resolutions: list[LegResolution] = []
     for leg in payload.legs:
-        ev_date = (leg.fecha_evento.date() if leg.fecha_evento else event_date)
+        # La IA alucina años cuando el boleto solo indica "2/5". Si la fecha que extrajo
+        # se aleja > 7 días de la del mensaje, ignorarla y usar event_date.
+        ev_date = event_date
+        if leg.fecha_evento is not None:
+            candidate = leg.fecha_evento.date()
+            if abs((candidate - event_date).days) <= 7:
+                ev_date = candidate
         needs_quarters = leg.mercado in _NEEDS_QUARTER_DATA
         game, source = await api.find_game(
             leg.equipo_local, leg.equipo_visitante, ev_date,
@@ -324,7 +455,10 @@ async def resolve_basketball_pick(
                 motivo=api.miss_motivo(leg, ev_date),
             ))
             continue
-        leg_resolutions.append(resolve_leg(leg, game, source or "?"))
+        players: list[EspnPlayerStat] | None = None
+        if leg.mercado in _PLAYER_MARKETS:
+            players = await api.fetch_players(game, source or "")
+        leg_resolutions.append(resolve_leg(leg, game, source or "?", players=players))
 
     if not leg_resolutions:
         return PickResolution(status="no_verificable", motivo="boleto sin piernas", legs=[])

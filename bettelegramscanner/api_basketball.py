@@ -250,11 +250,13 @@ class ApiBasketballClient:
                     elif _errors_indicate_plan_restriction(errors):
                         # Fecha no incluida en el plan (típico en Free: solo ±1 día).
                         # No es un fallo global; otras fechas (recientes) podrían funcionar.
+                        # La cacheamos como vacía para no reintentarla en cada pick.
                         self._last_error = (
                             f"fecha {d} no disponible en tu plan de API-Sports "
                             f"(detalle: {errors})"
                         )
                         log.warning("API-Sports basket %s -> %s", d, self._last_error)
+                        self._memory[d] = []
                     elif errors:
                         self._last_error = f"errors={errors}"
                         log.warning("API-Sports basket %s errors=%s", d, errors)
